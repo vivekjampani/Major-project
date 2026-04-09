@@ -1,0 +1,169 @@
+from flask import Flask, render_template, request, redirect, send_file
+from fpdf import FPDF
+import pandas as pd
+import os
+from datetime import date
+import pytesseract
+from PIL import Image
+
+app = Flask(__name__)
+
+UPLOAD_FOLDER = "static/uploads/"
+INVOICE_FOLDER = "static/invoices/"
+
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(INVOICE_FOLDER, exist_ok=True)
+
+# 👉 SET YOUR TESSERACT PATH (Windows only)
+# pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+# ===================== PDF CLASS =====================
+class Invoice(FPDF):
+    def header(self):
+        self.set_fill_color(128, 82, 150)
+        self.rect(0, 0, 210, 35, 'F')
+
+        self.set_text_color(255, 255, 255)
+
+        self.set_font("Arial", "B", 16)
+        self.cell(100, 10, "Ad4tech Material LLC", 0, 0)
+
+        self.set_font("Arial", "B", 20)
+        self.cell(0, 10, "INVOICE", 0, 1, "R")
+
+        self.set_font("Arial", "", 10)
+        self.cell(100, 5, "67h, Martin street", 0, 1)
+        self.cell(100, 5, "Mobile: +123456789", 0, 1)
+        self.cell(100, 5, "Email: ad4example@gmail.com", 0, 1)
+
+        self.ln(10)
+
+# ===================== COMMON FUNCTION =====================
+def generate_invoice(customer, product, qty, price, invoice_no):
+    amount = int(qty) * int(price)
+
+    pdf = Invoice()
+    pdf.add_page()
+
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Arial", "B", 12)
+
+    pdf.cell(100, 10, f"Bill To: {customer}", 0, 0)
+    pdf.cell(0, 10, f"Invoice No: INV-{invoice_no:03}", 0, 1)
+
+    pdf.cell(100, 10, "City Park", 0, 0)
+    pdf.cell(0, 10, f"Date: {date.today()}", 0, 1)
+
+    pdf.ln(10)
+
+    # Table Header
+    pdf.set_fill_color(220, 220, 180)
+
+    pdf.cell(15, 10, "Sl", 1, 0, 'C', True)
+    pdf.cell(80, 10, "Description", 1, 0, 'C', True)
+    pdf.cell(20, 10, "Qty", 1, 0, 'C', True)
+    pdf.cell(35, 10, "Rate", 1, 0, 'C', True)
+    pdf.cell(40, 10, "Amount", 1, 1, 'C', True)
+
+    # Row
+    pdf.cell(15, 10, "1", 1)
+    pdf.cell(80, 10, product, 1)
+    pdf.cell(20, 10, str(qty), 1)
+    pdf.cell(35, 10, str(price), 1)
+    pdf.cell(40, 10, str(amount), 1, 1)
+
+    pdf.ln(10)
+
+    pdf.cell(150, 10, "Total", 1, 0, 'R')
+    pdf.cell(40, 10, str(amount), 1, 1)
+
+    pdf.ln(20)
+    pdf.cell(0, 10, "Authorized Signatory", 0, 1, 'R')
+
+    filename = f"{INVOICE_FOLDER}Invoice_{customer}_{invoice_no}.pdf"
+    pdf.output(filename)
+
+    return filename
+
+# ===================== ROUTES =====================
+
+@app.route('/')
+def home():
+    return render_template("index.html")
+
+# -------- Excel Upload --------
+@app.route('/excel', methods=['GET', 'POST'])
+def excel():
+    if request.method == 'POST':
+        file = request.files['file']
+        path = UPLOAD_FOLDER + file.filename
+        file.save(path)
+
+        df = pd.read_excel(path)
+
+        files = []
+        for i, row in df.iterrows():
+            file = generate_invoice(
+                row["Customer"],
+                row["Product"],
+                row["Quantity"],
+                row["Price"],
+                i+1
+            )
+            files.append(file)
+
+        return f"{len(files)} invoices generated!"
+
+    return render_template("excel.html")
+
+# -------- Manual Entry --------
+@app.route('/manual', methods=['GET', 'POST'])
+def manual():
+    if request.method == 'POST':
+        customer = request.form['customer']
+        product = request.form['product']
+        qty = request.form['qty']
+        price = request.form['price']
+
+        file = generate_invoice(customer, product, qty, price, 1)
+        return send_file(file, as_attachment=True)
+
+    return render_template("manual.html")
+
+# -------- Screenshot OCR --------
+def extract_text(image_path):
+    img = Image.open(image_path)
+    text = pytesseract.image_to_string(img)
+    return text
+
+def parse_data(text):
+    lines = text.split("\n")
+    name = "Customer"
+    amount = 0
+
+    for line in lines:
+        if "₹" in line:
+            amount = ''.join(filter(str.isdigit, line))
+        if "Paid to" in line:
+            name = line.replace("Paid to", "").strip()
+
+    return name, amount
+
+@app.route('/screenshot', methods=['GET', 'POST'])
+def screenshot():
+    if request.method == 'POST':
+        file = request.files['image']
+        path = UPLOAD_FOLDER + file.filename
+        file.save(path)
+
+        text = extract_text(path)
+        name, amount = parse_data(text)
+
+        file = generate_invoice(name, "Payment Received", 1, amount, 1)
+        return send_file(file, as_attachment=True)
+
+    return render_template("screenshot.html")
+
+# ===================== RUN =====================
+if __name__ == "__main__":
+    app.run(debug=True)
